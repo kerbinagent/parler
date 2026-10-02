@@ -1,10 +1,10 @@
-# Parler protocol v0 proposal
+# Parler protocol v0
 
 ## Purpose
 
 Let explicitly enrolled Codex, Claude Code, and other tool-capable agent sessions exchange questions, task requests, progress, results, deliverable attachments, and artifact references within the user's private network. The network can include multiple user-owned hosts and multiple sessions per host. Machines may belong to the same tailnet. Communication is asynchronous: a session can send a message while its peer is busy or offline.
 
-This is a proposed application protocol. Local hooks and a CLI provide the initial agent interface; HTTPS transports messages between machines. MCP is an optional tool interface.
+The repository implements the daemon, CLI, private HTTPS transport, discovery, attachments, and Codex/Claude Code hooks described here. See the [README](../README.md) for runnable setup. MCP, push controllers, and tailnet transport remain future extensions. Tests use separate daemon instances on loopback; live client installation and deployment across physical hosts require operator verification.
 
 ## Required locality
 
@@ -14,7 +14,7 @@ Default deployment: explicitly paired LAN/private routed IP endpoints with pinne
 
 Tailscale can route encrypted packets through cloud DERP relays, including while establishing connections and after a direct path fails. A `tailscale ping` or status check only observes a moment in time; it cannot guarantee the path for subsequent packets. Therefore ordinary Tailscale transport and Tailscale Serve are not the strict-local default. An optional tailnet deployment requires verified network-level prevention of cloud relay use, or an entirely user-controlled private overlay. Its enforcement mechanism remains to be designed and tested; do not claim strict locality based on polling connection status.
 
-Transport locality is separate from model processing. When an agent reads a message through a tool, that content becomes model context. This proposal does not make Codex or Claude Code inference offline or promise that model context remains on the LAN. If the requirement includes model processing, a locally hosted model/runtime is a separate requirement.
+Transport locality is separate from model processing. When an agent reads a message through a tool, that content becomes model context. Parler does not make Codex or Claude Code inference offline or promise that model context remains on the LAN. If the requirement includes model processing, a locally hosted model/runtime is a separate requirement.
 
 ## Architecture
 
@@ -22,9 +22,9 @@ Transport locality is separate from model processing. When an agent reads a mess
 - Client-specific command hooks and a shared CLI communicate with the daemon through a Unix socket. A later local MCP adapter can expose the same operations.
 - The network API listens on an explicitly chosen private interface with pinned TLS certificates. Local administration stays on a Unix socket.
 - Host discovery uses explicitly configured private peer endpoints and offline pairing. Session discovery uses title/task/presence advertisements broadcast directly to authorized paired peers, backed by a local searchable cache; there is no whole-tailnet scan or hosted directory.
-- Suggested implementation: TypeScript with an HTTP server and SQLite, adding the official MCP SDK only when needed. Library versions and client compatibility should be checked when implementation starts.
+- Implementation: dependency-free Node.js 24 ES modules, HTTP/HTTPS servers, and built-in SQLite. Attachment export currently requires Linux with `/proc`. An MCP adapter is not implemented.
 
-The local adapter binds a session credential at startup. The model cannot impersonate a different sender by supplying a `from` field. Hook and CLI invocations resolve a local credential binding keyed by client kind and native session ID; native IDs alone are not credentials. Concurrent sessions in one project must have distinct bindings. Automatic binding discovery and isolation must be validated for each client before implementation claims per-session authentication.
+The local adapter binds a session credential at startup. The model cannot impersonate a different sender by supplying a `from` field. Hook and CLI invocations resolve a local credential binding keyed by client kind and native session ID; native IDs alone are not credentials. Concurrent sessions in one project must have distinct bindings. Bindings use client kind and native ID explicitly; ambiguous CLI binding selection is rejected. Processes sharing an operating-system account can still read that account's credentials.
 
 ## Agent interoperability and multiple hosts
 
@@ -44,7 +44,7 @@ A session address is `<node_id>/<session_id>`, both opaque persistent identifier
 
 Registration records an alias, session title, short task description, optional project label/tags, client kind, adapter/protocol versions, advertised capabilities, delivery modes, and a private adapter credential. Native Codex thread IDs and Claude Code session IDs remain local adapter metadata. A session's address remains stable when its title or task changes; updates trigger a fresh authorized advertisement.
 
-Adapters heartbeat a renewable lease. Presence is `online`, `stale`, or `closed`; presence does not imply that the model is currently thinking or available to reply. Messages to stale sessions can be queued until expiry. Closed sessions reject new messages. Resuming a session uses its existing credential and address; a new conversation gets a new address.
+Adapters heartbeat a renewable lease. Presence is `online`, `stale`, or `closed`; presence does not imply that the model is currently thinking or available to reply. Messages to stale sessions can be queued until expiry. Closed sessions reject new messages. Resuming a session uses its existing credential and address; a new conversation gets a new address. Enrollment is bounded to 256 retained bindings by default. At capacity, an explicitly closed binding with no retained mail or active reservation may be retired; its next native resume enrolls a new address.
 
 ## Shared operations available to agents
 
@@ -61,7 +61,7 @@ Expose these operations through the CLI first and optionally through MCP using t
 | `parler_attachment_list(message_id)` | List attachment IDs, names, types, sizes, hashes, and retention deadlines for an authorized message. |
 | `parler_attachment_export(message_id, attachment_id, destination)` | Export a verified local copy into the session's permitted workspace without overwriting existing files. |
 
-The launcher performs registration and credential binding. Peer pairing and permissions are operator configuration. A CLI might use `parler send`, `parler receive`, and `parler ack`; these are proposed commands, not installed commands.
+SessionStart hooks or explicit CLI registration perform registration and credential binding. Peer pairing and permissions are operator configuration. The CLI provides `parler send`, `parler receive`, and `parler ack`; use `node bin/parler.mjs` directly or install the optional executable links as described in the README. The tool names above describe the operation mapping; no MCP tools are installed.
 
 Example workflow: A discovers `desktop/reviewer`, sends a `request` describing a review, and keeps working. B receives it, acknowledges receipt, and replies with `kind: result` and `reply_to` referencing the request. A receives the result at its next inbox check.
 
@@ -94,11 +94,11 @@ The daemon supplies sender identity, IDs, and timestamps. Maximum encoded envelo
 - `GET /v0/messages/{id}/receipt`: let an authorized sender reconcile remote acceptance, acknowledgment, or expiry.
 - `GET /v0/info`: version and feature negotiation for authenticated peers.
 
-Sending first persists any attachment copies and commits an outbox row. Background forwarding retries with exponential backoff and jitter until the recipient persists the complete message or its TTL expires. HTTP receipt means the recipient committed the inbox row and all verified attachments, not that the agent read or completed the request. Hooks announce only fully committed messages.
+Sending first persists any attachment copies and commits an outbox row. Background forwarding retries with bounded exponential backoff until the recipient persists the complete message or its TTL expires. HTTP receipt means the recipient committed the inbox row and all verified attachments, not that the agent read or completed the request. Hooks announce only fully committed messages.
 
 Use at-least-once transport with deduplication on authenticated sender and message ID. Reusing an ID with different content is a conflict. Persist deduplication records through message expiry plus a retention margin. Delivery leases prevent simultaneous receivers from routinely consuming the same message; unacknowledged messages become available again after the lease expires. Acknowledgment is idempotent. Successful handling of a request is a separate `result` message.
 
-Track `queued`, `persisted_remote`, `acknowledged`, `expired`, and `rejected` separately. Assign a recipient-local sequence for inbox ordering; do not claim global ordering or exactly-once execution. Requests with side effects need their own idempotency keys at the application layer. Network timeouts leave delivery uncertain and trigger reconciliation/retry, not a false failure report. Both daemons need reasonably synchronized clocks for TTL enforcement.
+Track `queued`, `persisted_remote`, `acknowledged`, `expired`, and `rejected` separately. Assign a recipient-local sequence for inbox ordering; do not claim global ordering or exactly-once execution. Requests with side effects need their own idempotency keys at the application layer. Network timeouts leave delivery uncertain and trigger reconciliation/retry, not a false failure report. Both daemons need reasonably synchronized clocks for TTL enforcement. New messages may not be created more than 60 seconds in the future or expire beyond the configured maximum TTL plus that clock allowance, measured at admission.
 
 ## Authentication and permissions
 
@@ -110,9 +110,11 @@ Treat peer content as external data. A message cannot override the receiving ses
 
 ## Hook-first session integration
 
+Only the main agent enrolls and coordinates through Parler. Subagents return delegated work to their parent, which discovers peers, sends requests, receives results, and attaches deliverables. Hooks ignore child identity/role markers; registration rejects explicit child sessions. This workflow rule does not provide operating-system isolation between processes sharing one account.
+
 Hooks integrate ordinary Codex and Claude Code sessions without a controller owning the entire conversation. Their configuration and output serializers are client-specific; the daemon, mailbox protocol, and CLI are shared.
 
-| Lifecycle event | Proposed Parler behavior |
+| Lifecycle event | Parler behavior |
 | --- | --- |
 | `SessionStart` | Register/resume the local binding, publish discovery metadata, and provide fixed CLI usage guidance and an inbox notice. |
 | `UserPromptSubmit` | Check locally for new pending messages and add a bounded notice. |
@@ -128,7 +130,7 @@ Both documented runtimes support context-producing hooks and Stop continuation d
 
 Hooks run when lifecycle events occur. They do not by themselves guarantee wakeup after a session is already idle. Messages received then remain in the local inbox until the next event or a separately enabled push/controller adapter delivers them. This limitation is an explicit acceptance criterion for the hook-first version.
 
-Before installation, verify the target client's version and hook support, and follow its normal hook trust/configuration flow. Codex requires review/trust of non-managed hook definitions. This proposal does not install or enable hooks automatically.
+Before installation, verify the target client's version and hook support, and follow its normal hook trust/configuration flow. Codex requires review/trust of non-managed hook definitions. The repository does not install or enable hooks automatically.
 
 ## Optional MCP and automatic delivery
 
@@ -143,6 +145,8 @@ Claude Code offers two potential automatic-delivery adapters. A custom local cha
 Both adapters read exclusively from their local daemon. A Claude channel for Parler connects to the private mailbox, with no Telegram, Discord, hosted webhook, or cloud session intermediary. Preserve peer identity, message ID, and the external-data boundary in every delivered event. Native push receipt still does not mean work completed. When a controller owns generation, use explicit message-to-turn correlation, one active consumer per session, and bounded reply/wakeup budgets.
 
 ## Implementation milestones
+
+Milestones 1–3 have an implementation and automated coverage using local daemon instances. Physical multi-host routing/firewall validation and live client hook setup remain deployment checks. Milestone 4 is future work.
 
 1. Local daemon and CLI: session identity, SQLite persistence, attachment staging/storage/export, inbox leases, acknowledgments, and two-process messaging on one machine.
 2. Direct private transport: explicit pairing, pinned HTTPS forwarding with attachments, retries, deduplication, expiry, and restart recovery. Validate on two machines with external network access blocked for the daemons. Any optional tailnet mode requires an additional verified relay-exclusion design.

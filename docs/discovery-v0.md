@@ -1,4 +1,6 @@
-# Session discovery v0 proposal
+# Session discovery v0
+
+The v0 implementation is included in this repository. Use the [README](../README.md) for runnable examples and current deployment limitations. Only main sessions coordinate Parler; subagents return work to their parent.
 
 ## Find a session by its work
 
@@ -24,7 +26,7 @@ Each record includes:
 
 Presence is `online`, `stale`, or `closed`; activity is `working`, `idle`, or `unknown`. Hook events provide observations, not guarantees that the model is currently generating. A fresh daemon advertisement does not make an old session observation fresh. Hook-only sessions become stale when no new local liveness evidence is available, even if the daemon is reachable.
 
-Proposed metadata caps: title 80 characters, task summary 240, project label 128, and up to 8 tags of 32 characters each. Validate text and reject control characters; cap the encoded record at 4 KiB. Metadata is shared descriptive data and must not contain credentials, full prompts, transcripts, source files, or private absolute workspace paths.
+Metadata caps: title 80 characters, task summary 240, project label 128, and up to 8 tags of 32 characters each. Validate text and reject control characters; cap the encoded record at 4 KiB. Metadata is shared descriptive data and must not contain credentials, full prompts, transcripts, source files, or private absolute workspace paths.
 
 ## Registration and title updates
 
@@ -32,7 +34,7 @@ Proposed metadata caps: title 80 characters, task summary 240, project label 128
 
 Hook guidance tells the agent to set a concise Parler title and task summary when it starts work or changes assignments. Updates are explicit through the CLI, so it can summarize the task instead of broadcasting the user's whole prompt. They persist across resume and trigger advertisements. This metadata describes the intended assignment and can become stale; it is not inferred continuously from all assistant text.
 
-Proposed commands, not installed commands:
+CLI commands (see the [README](../README.md) for installation and session binding):
 
 ```sh
 parler session update --title 'Database migration research' \
@@ -50,13 +52,13 @@ Session updates can only change the calling session's metadata. Native IDs remai
 
 “Broadcast” means authenticated unicast fanout to configured, authorized peers over the same approved private HTTPS paths as message delivery. It does not mean LAN UDP broadcast, a public registry, or scanning the tailnet. This works across private routed subnets without relying on multicast availability.
 
-After registration, title/task changes, presence changes, and detach, publish a fresh visibility-filtered snapshot of this node's enrolled sessions. Also publish periodic snapshots; proposed interval 30 seconds. Each snapshot includes the owning node ID, a persistently increasing revision, publication time, and the records visible to that recipient. Never forward another node's advertisements. The daemon may coalesce rapid updates and enforce rate/size limits.
+After registration, title/task changes, presence changes, and detach, publish a fresh visibility-filtered snapshot of this node's enrolled sessions. Also publish periodic snapshots; default interval 30 seconds. Each snapshot includes the owning node ID, a persistently increasing revision, publication time, and the records visible to that recipient. Never forward another node's advertisements. The daemon may coalesce rapid updates and enforce rate/size limits.
 
 The recipient authenticates the paired node, verifies ownership of every advertised address, and accepts only increasing revisions. Each revision must describe one consistent snapshot; content changes allocate a new revision. Persist the revision counter across daemon restart. A complete filtered snapshot replaces that peer's previous visible records, including withdrawals. A changed visibility policy emits a fresh revision. Initial pairing, cache loss, or reconnect can recover with `GET /v0/sessions`; polling is also a fallback if an announcement fails.
 
 Bound snapshots to at most 256 advertised records and 1 MiB of encoded metadata per peer in v0, with a lower effective deployment cap allowed. Reject partial/oversized snapshots rather than silently withdrawing sessions from incomplete data. Pagination and larger host fleets can be negotiated in a later version.
 
-Proposed cache freshness deadline: 120 seconds from publication, subject to the protocol's clock synchronization assumption. Lost announcements or an offline host make its cache stale; retain the records for display with explicit stale status. Duplicate/delayed announcements cannot renew freshness using their arrival time. Periodic broadcasts renew directory availability, while session `last_seen_at` remains based on genuine local observations. Closure/withdrawal should be pushed promptly, with cache expiry covering missed updates.
+Default cache freshness deadline: 120 seconds from publication, subject to the protocol's clock synchronization assumption. Lost announcements or an offline host make its cache stale; retain the records for display with explicit stale status. Duplicate/delayed announcements cannot renew freshness using their arrival time. Periodic broadcasts renew directory availability, while session `last_seen_at` remains based on genuine local observations. Closure/withdrawal should be pushed promptly, with cache expiry covering missed updates.
 
 Host endpoints and pairing still require initial operator configuration. The session directory answers “what is working where?” after pairing; it does not solve automatic discovery of every machine the user owns.
 

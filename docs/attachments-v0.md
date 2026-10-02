@@ -1,4 +1,6 @@
-# Attachment delivery v0 proposal
+# Attachment delivery v0
+
+The v0 implementation is included in this repository. Use the [README](../README.md) for runnable examples and current deployment limitations. Only main sessions coordinate Parler; subagents return work to their parent.
 
 ## Research request and result
 
@@ -42,7 +44,7 @@ The ID is unique within its message. The hash covers the exact stored bytes. The
 
 Markdown in UTF-8 is the first required deliverable format. The store and transfer format accept regular file bytes with declared media types, so other deliverables can be added without changing routing. Media type is descriptive, not proof that content is safe or executable. No automatic execution, archive extraction, or loading remote resources from Markdown.
 
-Initial proposed configurable limits:
+Default configurable limits:
 
 | Limit | Default |
 | --- | --- |
@@ -57,7 +59,7 @@ The host cap accounts for physical blob and staging storage, including concurren
 
 ## CLI workflow and local ownership
 
-These are proposed commands, not installed commands. Assume the CLI is bound to the calling session and the displayed addresses/IDs have been resolved from discovery:
+These CLI commands are implemented; see the [README](../README.md) for installation and explicit session binding. Assume the CLI is bound to the calling session and the displayed addresses/IDs have been resolved from discovery:
 
 ```sh
 parler send --to host-b/researcher --kind request \
@@ -95,7 +97,7 @@ Version 0 retries the complete transfer; it does not need chunk-resume complexit
 
 `queued` means the sender daemon owns complete local copies. `persisted_remote` means the recipient owns a verified, durable message plus all attachments. `acknowledged` means the recipient session handled the message; exporting an attachment alone does not acknowledge it. Research completion is represented by the correlated result message, independently of acknowledgment. Receipt/status reports include committed attachment IDs and expose per-message retention information.
 
-Proposed default policy: keep blobs referenced by queued or pending messages until acknowledgment or message expiry. Then retain the message and its attachment references for 7 additional days, separately on each host; return the effective retention deadline through the CLI. An expired message is no longer presented as new work, but an authorized historical read/export remains possible during retention. An acknowledgment does not immediately delete the daemon's only copy. Exported workspace files are not removed by daemon garbage collection.
+Default policy: keep blobs referenced by queued or pending messages until acknowledgment or message expiry. Then retain the message and its attachment references for 7 additional days, separately on each host; return the effective retention deadline through the CLI. An expired message is no longer presented as new work, but an authorized historical read/export remains possible during retention. An acknowledgment does not immediately delete the daemon's only copy. Exported workspace files are not removed by daemon garbage collection.
 
 After the retention deadline, remove references and reclaim blobs only when no retained message or active transfer/export references them. Delete abandoned staging files after a bounded recovery window, accounting for live transfers. Garbage collection and concurrent transfers require atomic reference/lease bookkeeping. Deduplication tombstones can outlive blob retention; reject expired retransmissions rather than recreating deleted work. Explicit future retention extensions or pins must remain subject to quotas and permissions.
 
