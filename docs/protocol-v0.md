@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Let explicitly enrolled Codex, Claude Code, and other tool-capable agent sessions exchange questions, task requests, progress, results, and artifact references within the user's private network. The network can include multiple user-owned hosts and multiple sessions per host. Machines may belong to the same tailnet. Communication is asynchronous: a session can send a message while its peer is busy or offline.
+Let explicitly enrolled Codex, Claude Code, and other tool-capable agent sessions exchange questions, task requests, progress, results, deliverable attachments, and artifact references within the user's private network. The network can include multiple user-owned hosts and multiple sessions per host. Machines may belong to the same tailnet. Communication is asynchronous: a session can send a message while its peer is busy or offline.
 
 This is a proposed application protocol. Local hooks and a CLI provide the initial agent interface; HTTPS transports messages between machines. MCP is an optional tool interface.
 
@@ -18,10 +18,10 @@ Transport locality is separate from model processing. When an agent reads a mess
 
 ## Architecture
 
-- One persistent `parlerd` per machine, with a SQLite inbox and outbox independent of agent process lifetimes.
+- One persistent `parlerd` per machine, with a SQLite inbox/outbox and a local immutable attachment store independent of agent process lifetimes.
 - Client-specific command hooks and a shared CLI communicate with the daemon through a Unix socket. A later local MCP adapter can expose the same operations.
 - The network API listens on an explicitly chosen private interface with pinned TLS certificates. Local administration stays on a Unix socket.
-- Initial discovery uses explicitly configured private peer endpoints and offline pairing. Each peer advertises only sessions enrolled for that pairing; there is no whole-tailnet scan or hosted directory.
+- Host discovery uses explicitly configured private peer endpoints and offline pairing. Session discovery uses title/task/presence advertisements broadcast directly to authorized paired peers, backed by a local searchable cache; there is no whole-tailnet scan or hosted directory.
 - Suggested implementation: TypeScript with an HTTP server and SQLite, adding the official MCP SDK only when needed. Library versions and client compatibility should be checked when implementation starts.
 
 The local adapter binds a session credential at startup. The model cannot impersonate a different sender by supplying a `from` field. Hook and CLI invocations resolve a local credential binding keyed by client kind and native session ID; native IDs alone are not credentials. Concurrent sessions in one project must have distinct bindings. Automatic binding discovery and isolation must be validated for each client before implementation claims per-session authentication.
@@ -30,9 +30,9 @@ The local adapter binds a session credential at startup. The model cannot impers
 
 The wire protocol does not contain provider-specific tool calls, transcript formats, or native session IDs. The same message can go from Codex to Claude Code, Claude Code to Codex, or between two sessions of the same client. Each session advertises `client_kind` (`codex`, `claude-code`, or `other`), adapter version, protocol versions, supported message kinds, and delivery modes. Client kind is informational; it is not a permission grant or proof of execution capability.
 
-Keep advertised task capabilities such as `code_review` separate from transport capabilities such as `hook_poll`, `poll`, and `push`. Negotiate compatible protocol/message support before sending. Version 0 requires text messages and hook-triggered inbox checks for both primary clients; optional push delivery cannot be assumed from client kind.
+Keep advertised task capabilities such as `code_review` separate from transport capabilities such as `hook_poll`, `poll`, `push`, and `attachments_v0`. Negotiate compatible protocol/message support and attachment limits before sending. Version 0 requires text messages, Markdown attachment delivery, and hook-triggered inbox checks for both primary clients; optional push delivery cannot be assumed from client kind.
 
-Each daemon keeps a local table mapping paired node IDs to approved private endpoints and credentials. A sender addresses `<node_id>/<session_id>` and the daemon routes directly to that host. Sessions on the same host use local delivery without network forwarding. There is no global broker, transit routing, or gossip in version 0. Listing all peers queries configured reachable hosts and reports unavailable hosts explicitly rather than treating their sessions as gone. Discovery results can be cached with freshness timestamps.
+Each daemon keeps a local table mapping paired node IDs to approved private endpoints and credentials. A sender addresses `<node_id>/<session_id>` and the daemon routes directly to that host. Sessions on the same host use local delivery without network forwarding. There is no global broker, transit routing, or multi-hop gossip in version 0. Daemons broadcast their own enrolled session advertisements to authorized paired peers and can refresh through peer listing queries. Listing searches this local cache and reports unavailable/stale hosts explicitly rather than treating their sessions as gone. See [session discovery](discovery-v0.md) for titles, matching, freshness, and announcement semantics.
 
 For example, a Codex implementer on host A can request a review from Claude Code on host B and send the resulting commit reference to a test session on host C. Each destination pair needs an approved private route and pairing. Owning all three hosts does not automatically authorize every session to access every other mailbox or workspace.
 
@@ -42,7 +42,7 @@ Native session lifecycle belongs to the local adapter. Resuming a native convers
 
 A session address is `<node_id>/<session_id>`, both opaque persistent identifiers generated by Parler. A human alias such as `laptop/reviewer` is a display label, not an authorization identity.
 
-Registration records an alias, optional project label, client kind, adapter/protocol versions, advertised capabilities, delivery modes, and a private adapter credential. Native Codex thread IDs and Claude Code session IDs remain local adapter metadata.
+Registration records an alias, session title, short task description, optional project label/tags, client kind, adapter/protocol versions, advertised capabilities, delivery modes, and a private adapter credential. Native Codex thread IDs and Claude Code session IDs remain local adapter metadata. A session's address remains stable when its title or task changes; updates trigger a fresh authorized advertisement.
 
 Adapters heartbeat a renewable lease. Presence is `online`, `stale`, or `closed`; presence does not imply that the model is currently thinking or available to reply. Messages to stale sessions can be queued until expiry. Closed sessions reject new messages. Resuming a session uses its existing credential and address; a new conversation gets a new address.
 
@@ -52,11 +52,14 @@ Expose these operations through the CLI first and optionally through MCP using t
 
 | Tool | Purpose |
 | --- | --- |
-| `parler_sessions(peer?)` | List enrolled sessions and their presence/capabilities. |
-| `parler_send(to, kind, body, conversation_id?, reply_to?, ttl_seconds?)` | Persist a message locally and return its ID and delivery status. |
+| `parler_sessions(peer?, query?, client_kind?, project?)` | Search enrolled sessions by title/task/tags and list candidates with addresses, client type, presence, freshness, and capabilities. |
+| `parler_session_update(title?, task_summary?, project_label?, tags?)` | Update the calling session's discovery metadata and advertise it to allowed peers. |
+| `parler_send(to, kind, body, attachments?, conversation_id?, reply_to?, ttl_seconds?)` | Persist a message and immutable attachment copies locally; return its ID and delivery status. |
 | `parler_receive(limit?, wait_seconds?)` | Fetch pending messages for the adapter's bound session with temporary delivery leases; bounded long polling, at most 30 seconds. |
 | `parler_ack(message_id, delivery_token)` | Acknowledge a received message after its contents have been handled or retained in session context. |
 | `parler_status(message_id)` | Inspect local persistence, remote persistence, acknowledgment, or expiry. |
+| `parler_attachment_list(message_id)` | List attachment IDs, names, types, sizes, hashes, and retention deadlines for an authorized message. |
+| `parler_attachment_export(message_id, attachment_id, destination)` | Export a verified local copy into the session's permitted workspace without overwriting existing files. |
 
 The launcher performs registration and credential binding. Peer pairing and permissions are operator configuration. A CLI might use `parler send`, `parler receive`, and `parler ack`; these are proposed commands, not installed commands.
 
@@ -81,16 +84,17 @@ Example workflow: A discovers `desktop/reviewer`, sends a `request` describing a
 
 Message and conversation IDs are UUIDs in the implementation; the example uses readable placeholders. Supported kinds are `message`, `request`, `progress`, `result`, and `error`. A request describes proposed work; it does not automatically authorize execution. A reply references an existing message in the same conversation.
 
-The daemon supplies sender identity, IDs, and timestamps. Maximum encoded envelope size: 64 KiB. Version 0 accepts text plus optional artifact references, such as a repository URL, commit SHA, path, and content hash. Artifact references do not transfer files or guarantee that the other machine has access. Raw transcripts and file transfer are outside the first milestone.
+The daemon supplies sender identity, IDs, and timestamps. Maximum encoded envelope size: 64 KiB, including attachment metadata but excluding attachment bytes. Version 0 supports attachments through an optional `attachments` manifest as defined in [attachment delivery](attachments-v0.md). An attachment is a daemon-owned copy delivered with its message. Optional artifact references, such as repository URLs and commit SHAs, remain references and do not transfer bytes. Raw transcript replication and shared mutable files are outside the first milestone.
 
 ## Network endpoints and delivery
 
-- `GET /v0/sessions`: advertised sessions visible to the authenticated peer.
-- `POST /v0/messages`: accept a validated message addressed to a local enrolled session; return a durable receipt.
+- `GET /v0/sessions`: authoritative snapshot of advertised sessions visible to the authenticated peer.
+- `POST /v0/announcements`: receive an authenticated owner's session snapshot and update the discovery cache as defined in [session discovery](discovery-v0.md).
+- `POST /v0/messages`: accept a validated message addressed to a local enrolled session; use JSON for messages without attachments or the multipart format defined in [attachment delivery](attachments-v0.md). Return a durable receipt only after the message and all attachment bytes are stored and verified.
 - `GET /v0/messages/{id}/receipt`: let an authorized sender reconcile remote acceptance, acknowledgment, or expiry.
 - `GET /v0/info`: version and feature negotiation for authenticated peers.
 
-Sending first commits an outbox row. Background forwarding retries with exponential backoff and jitter until the recipient persists the message or its TTL expires. HTTP receipt means the recipient committed the inbox row, not that Codex read or completed the request.
+Sending first persists any attachment copies and commits an outbox row. Background forwarding retries with exponential backoff and jitter until the recipient persists the complete message or its TTL expires. HTTP receipt means the recipient committed the inbox row and all verified attachments, not that the agent read or completed the request. Hooks announce only fully committed messages.
 
 Use at-least-once transport with deduplication on authenticated sender and message ID. Reusing an ID with different content is a conflict. Persist deduplication records through message expiry plus a retention margin. Delivery leases prevent simultaneous receivers from routinely consuming the same message; unacknowledged messages become available again after the lease expires. Acknowledgment is idempotent. Successful handling of a request is a separate `result` message.
 
@@ -110,7 +114,7 @@ Hooks integrate ordinary Codex and Claude Code sessions without a controller own
 
 | Lifecycle event | Proposed Parler behavior |
 | --- | --- |
-| `SessionStart` | Register/resume the local binding; provide fixed CLI usage guidance and an inbox notice. |
+| `SessionStart` | Register/resume the local binding, publish discovery metadata, and provide fixed CLI usage guidance and an inbox notice. |
 | `UserPromptSubmit` | Check locally for new pending messages and add a bounded notice. |
 | `PostToolUse` | Check locally while the agent works, throttled to avoid a read after every tool call. |
 | `Stop` | If unannounced pending messages exist, request at most one additional pass to inspect them. |
@@ -140,12 +144,16 @@ Both adapters read exclusively from their local daemon. A Claude channel for Par
 
 ## Implementation milestones
 
-1. Local daemon and CLI: session identity, SQLite persistence, inbox leases, acknowledgments, and two-process messaging on one machine.
-2. Direct private transport: explicit pairing, pinned HTTPS forwarding, retries, deduplication, expiry, and restart recovery. Validate on two machines with external network access blocked for the daemons. Any optional tailnet mode requires an additional verified relay-exclusion design.
-3. Hooks and CLI integration: session-bound adapters and documented inbox workflows for Codex and Claude Code. Demonstrate bidirectional request/result exchanges, concurrent sessions in one project, context separation, bounded Stop continuation, and routing across three user-owned hosts.
+1. Local daemon and CLI: session identity, SQLite persistence, attachment staging/storage/export, inbox leases, acknowledgments, and two-process messaging on one machine.
+2. Direct private transport: explicit pairing, pinned HTTPS forwarding with attachments, retries, deduplication, expiry, and restart recovery. Validate on two machines with external network access blocked for the daemons. Any optional tailnet mode requires an additional verified relay-exclusion design.
+3. Hooks and CLI integration: session-bound adapters, title/task advertisements, searchable discovery, and documented inbox workflows for Codex and Claude Code. Demonstrate title-based recipient discovery followed by a research request with an attached Markdown result in both client directions, concurrent sessions in one project, context separation, bounded Stop continuation, and routing across three user-owned hosts.
 4. Optional MCP tools and client-specific push adapters: Codex app-server, Claude Code channels where available, and/or a Claude Agent SDK controller. Use bounded wakeups and request budgets to prevent automatic reply loops.
 
 Meaningful acceptance checks include lost HTTP responses after persistence, duplicate retransmission, receiver restart, expired leases, sender spoofing, cross-session access denial, and a complete request/result exchange. Verify direct private routing with packet capture, successful transport while daemon internet access is blocked, and local queueing when the private route fails. A tailnet deployment must also prove that no message is sent through DERP during startup or after direct connectivity fails. Automatic wakeup is not part of the initial acceptance criteria.
+
+Attachment acceptance checks additionally cover sender source-file removal after queueing, truncated/corrupt transfers, lost receipts, atomic message visibility, quota exhaustion, export path/overwrite rejection, session access isolation, retention, and crash recovery. See [attachment delivery](attachments-v0.md) for the detailed contract.
+
+Discovery acceptance checks cover multiple matching titles, title changes with stable addresses, stale host/session data, reordered announcements, visibility filtering, false owner claims, and daemon restart. See [session discovery](discovery-v0.md).
 
 ## Primary references
 
