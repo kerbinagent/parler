@@ -215,6 +215,12 @@ Hooks enroll main sessions, touch presence, and announce validated pending messa
 
 Hooks **cannot wake a session that is already idle**. Incoming mail remains stored until its next lifecycle event or an explicit CLI poll. Push controllers and MCP adapters are not implemented in this version.
 
+## Same-host operation without Tailscale
+
+Main sessions on one machine share the same state directory and local Unix socket. They send to their usual `node_id/session_id` addresses; same-node delivery, discovery, acknowledgments, and attachments stay in the local daemon and need no Tailscale connection or peer pairing. A local-only deployment uses the default `private` mode and loopback listener `127.0.0.1`; Tailscale does not need to be installed.
+
+Even when configured with an external LAN or Tailscale listener, the daemon starts its local socket if that IP is temporarily unavailable. `parler info` reports `network_status: "unavailable"` and `network_error_code: "EADDRNOTAVAIL"`. Local messages continue to work, while cross-host work remains queued. The daemon retries binding the configured address every five seconds and reports `network_status: "listening"` once it returns, preserving session identities and pairings. It never switches to a wildcard or another interface. Other startup failures, such as a port already in use, still produce an error.
+
 ## Limits and retention
 
 | Default | Value |
@@ -249,6 +255,6 @@ npm test
 npm run check
 ```
 
-The automated suite exercises storage, transfer validation, local session isolation, hook behavior, and five integration scenarios using local daemon instances. Integration coverage includes Codex/Claude discovery and Markdown exchange across two daemon instances, independent recipient attachment copies after sender shutdown, retries and deduplication, authentication/ownership rejection, size and integrity checks, and quota handling. Tests do not launch live Codex or Claude Code clients or claim a production multi-host deployment has been exercised.
+The automated suite exercises storage, transfer validation, local session isolation, hook behavior, and six integration scenarios using local daemon instances. Integration coverage includes Codex/Claude discovery and Markdown exchange across two daemon instances, independent recipient attachment copies after sender shutdown, retries and deduplication, authentication/ownership rejection, size and integrity checks, quota handling, and local attachment delivery with an unavailable network interface followed by listener recovery. Tests do not launch live Codex or Claude Code clients or claim a production multi-host deployment has been exercised.
 
 See the [protocol](docs/protocol-v0.md), [attachment design](docs/attachments-v0.md), [discovery design](docs/discovery-v0.md), and [hook guide](docs/hooks.md) for further detail.

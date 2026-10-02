@@ -15,7 +15,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 try {
   const daemon = await startDaemon({ stateDir: resolve(stateDir), workerIntervalMs });
-  console.log(JSON.stringify({ event: 'ready', node_id: daemon.info.node_id, endpoint: daemon.info.endpoint, socket: daemon.socketPath }));
+  console.log(JSON.stringify({ event: 'ready', node_id: daemon.info.node_id, endpoint: daemon.info.endpoint, socket: daemon.socketPath, network_status: daemon.info.network_status }));
   const shutdown = async () => { await daemon.close(); process.exit(0); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 } catch (error) {

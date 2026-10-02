@@ -94,10 +94,13 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
   try { writeFileSync(lockfd, String(process.pid)); } finally { closeSync(lockfd); }
   if (existsSync(socketPath)) unlinkSync(socketPath);
 
-  let store, network, local, interval, closed = false, activeTick, dirty = true, lastSnapshot = 0, lastMaintenance = 0;
+  let store, network, local, interval, closed = false, activeTick, dirty = true, lastSnapshot = 0, lastMaintenance = 0, nextListenAttempt = 0;
   const connections = new Set();
   const shutdown = new AbortController();
-  const requestPeer = (peer, options) => sendPeer(peer, { ...options, signal: shutdown.signal, allowTailnet: config.network_mode === 'tailscale' });
+  const requestPeer = (peer, options) => {
+    if (!network?.listening) return Promise.reject(new AppError('NETWORK_UNAVAILABLE', 'Configured network interface is unavailable; local sessions remain usable', 503, true));
+    return sendPeer(peer, { ...options, signal: shutdown.signal, allowTailnet: config.network_mode === 'tailscale' });
+  };
   const peerMap = new Map(config.peers.map(peer => [peer.node_id, peer]));
   const requestBudget = new Map();
   const activeUploads = new Set();
@@ -439,8 +442,10 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
     if (closed || activeTick) return;
     activeTick = (async () => {
       const now = Date.now();
+      if (!network.listening && now >= nextListenAttempt) await listenNetwork();
+      if (closed) return;
       await concurrently(store.dueOutbox(20), 4, async envelope => { if (!closed) await deliver(envelope); });
-      if (!closed && (dirty || now - lastSnapshot >= config.timing.snapshotSeconds * 1000)) {
+      if (!closed && network.listening && (dirty || now - lastSnapshot >= config.timing.snapshotSeconds * 1000)) {
         dirty = false; lastSnapshot = now;
         await concurrently(outgoingPeers(), 4, async peer => {
           if (closed) return;
@@ -458,6 +463,31 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
       console.error(`Parler worker: ${error instanceof AppError ? error.code : 'INTERNAL_ERROR'}`);
     }).finally(() => { activeTick = undefined; });
     await activeTick;
+  }
+
+  async function listenNetwork({ startup = false } = {}) {
+    nextListenAttempt = Date.now() + 5000;
+    try {
+      network.listen(config.port, config.listen);
+      await once(network, 'listening');
+    } catch (error) {
+      info.network_status = 'unavailable';
+      info.network_error_code = error.code ?? 'LISTEN_FAILED';
+      // A missing external interface must not prevent same-host messaging.
+      // Other startup errors still surface instead of hiding a port conflict.
+      if (startup && error.code !== 'EADDRNOTAVAIL') throw error;
+      return;
+    }
+    if (closed) return;
+    const bound = network.address();
+    info.endpoint = endpointFor(config.listen, bound.port);
+    info.network_status = 'listening';
+    delete info.network_error_code;
+    config.endpoint = info.endpoint;
+    // Preserve the bound test/development port across restart.
+    if (config.port === 0) config.port = bound.port;
+    saveConfig(stateDir, config);
+    dirty = true;
   }
 
   const close = async () => {
@@ -481,20 +511,12 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
       server.on('connection', socket => { connections.add(socket); socket.on('close', () => connections.delete(socket)); });
       server.on('clientError', (_error, socket) => { socket.destroy(); });
     }
-    network.listen(config.port, config.listen);
-    await once(network, 'listening');
-    const networkAddress = network.address();
-    info.endpoint = endpointFor(config.listen, networkAddress.port);
-    config.endpoint = info.endpoint;
-    // port=0 is reserved for tests/development; persist its bound port so a
-    // restart keeps the endpoint advertised in existing invitations.
-    if (config.port === 0) config.port = networkAddress.port;
-    saveConfig(stateDir, config);
     local.listen(socketPath);
     await once(local, 'listening'); chmodSync(socketPath, 0o600);
+    await listenNetwork({ startup: true });
     interval = setInterval(tick, workerIntervalMs);
     void tick();
-    return { close, networkAddress, socketPath, info, store };
+    return { close, get networkAddress() { return network.address(); }, socketPath, info, store };
   } catch (error) { await close(); throw error; }
 }
 

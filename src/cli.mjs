@@ -187,7 +187,7 @@ export async function runCli(args = process.argv.slice(2), { stdin = process.std
         one();
         const { startDaemon } = await import('./daemon.mjs');
         const daemon = await startDaemon({ stateDir, workerIntervalMs: integer(o['worker-interval-ms'], 'worker interval', { min: 10, max: 3600000 }) });
-        print({ status: 'listening', socket_path: daemon.socketPath, network_address: daemon.networkAddress });
+        print({ status: 'listening', socket_path: daemon.socketPath, network_address: daemon.networkAddress, network_status: daemon.info.network_status });
         let stopping = false;
         const stop = async () => { if (stopping) return; stopping = true; await daemon.close(); };
         process.once('SIGINT', stop); process.once('SIGTERM', stop);

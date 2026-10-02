@@ -381,3 +381,61 @@ test('same-host attachment delivery reuses stored bytes when the physical host q
   assert.equal(delivered.status, 200);
   assert.deepEqual(delivered.bytes, bytes);
 });
+
+test('local mail works without the configured network interface and its listener recovers later', { timeout: 20_000 }, async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'parler-local-offline-'));
+  const node = { stateDir: path.join(directory, 'state'), workspace: path.join(directory, 'work') };
+  await mkdir(node.workspace);
+  let interfaceAvailable = false;
+  const attempts = [];
+  const createServer = https.createServer;
+  t.mock.method(https, 'createServer', (...args) => {
+    const server = createServer(...args), listen = server.listen.bind(server);
+    server.listen = (port, host) => {
+      attempts.push({ port, host });
+      if (!interfaceAvailable) {
+        process.nextTick(() => server.emit('error', Object.assign(new Error('Test interface is absent'), { code: 'EADDRNOTAVAIL' })));
+        return server;
+      }
+      // Use a real loopback listener to model the configured interface returning.
+      return listen(port, '127.0.0.1');
+    };
+    return server;
+  });
+  t.after(async () => {
+    if (node.daemon) await node.daemon.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await initState({ stateDir: node.stateDir, listen: '100.64.99.99', port: 0, networkMode: 'tailscale' });
+  node.admin = (await readFile(path.join(node.stateDir, 'admin.token'), 'utf8')).trim();
+  node.daemon = await startDaemon({ stateDir: node.stateDir, workerIntervalMs: 20 });
+  node.info = await ok(node, 'GET', '/local/info');
+  assert.equal(node.info.network_status, 'unavailable');
+  assert.equal(node.info.network_error_code, 'EADDRNOTAVAIL');
+  assert.equal(node.daemon.networkAddress, null);
+  const sender = await register(node, 'codex', 'Local offline sender');
+  const recipient = await register(node, 'claude-code', 'Local offline receiver');
+  const bytes = '# A same-host deliverable without Tailscale\n';
+  const source = path.join(node.workspace, 'offline-local.md');
+  await writeFile(source, bytes);
+  const sent = await cli(node, ['--session', sender.address, 'send', '--to', recipient.address,
+    '--kind', 'result', '--text', 'Local delivery needs no network.', '--attach', source]);
+  const message = await waitFor(async () => {
+    const inbox = await ok(node, 'GET', '/local/messages', undefined, recipient.token);
+    return inbox.messages.find(item => item.id === sent.json.id);
+  }, 'local delivery while external interface is absent', 3000);
+  const attachment = await local(node, 'GET', `/local/messages/${message.id}/attachments/${message.attachments[0].id}`, undefined, recipient.token);
+  assert.equal(attachment.bytes.toString(), bytes);
+  await ok(node, 'POST', `/local/messages/${message.id}/ack`, { delivery_token: message.delivery_token }, recipient.token);
+  assert.equal(attempts.length, 1, 'Retry is bounded rather than running on every worker tick');
+  interfaceAvailable = true;
+  const recovered = await waitFor(async () => {
+    const info = await ok(node, 'GET', '/local/info');
+    return info.network_status === 'listening' ? info : false;
+  }, 'network listener recovery', 8000);
+  assert.equal(recovered.network_error_code, undefined);
+  assert.match(recovered.endpoint, /^https:\/\/100\.64\.99\.99:\d+$/);
+  assert.ok(node.daemon.networkAddress.port > 0);
+  assert.ok(attempts.every(attempt => attempt.host === '100.64.99.99'), 'No wildcard or alternate interface fallback');
+  assert.equal((await ok(node, 'GET', '/local/session', undefined, sender.token)).address, sender.address);
+});

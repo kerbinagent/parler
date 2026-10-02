@@ -18,7 +18,7 @@ Transport locality is separate from model processing. When an agent reads a mess
 
 ## Architecture
 
-- One persistent `parlerd` per machine, with a SQLite inbox/outbox and a local immutable attachment store independent of agent process lifetimes.
+- One persistent `parlerd` per machine, with a SQLite inbox/outbox and a local immutable attachment store independent of agent process lifetimes. Same-host delivery uses its local Unix socket and store, without Tailscale or peer pairing. An unavailable configured IP does not block local startup; the daemon retries that network listener while local messages remain usable.
 - Client-specific command hooks and a shared CLI communicate with the daemon through a Unix socket. A later local MCP adapter can expose the same operations.
 - The network API listens on an explicitly chosen private interface with pinned TLS certificates. Local administration stays on a Unix socket.
 - Host discovery uses explicitly configured private peer endpoints and offline pairing. Session discovery uses title/task/presence advertisements broadcast directly to authorized paired peers, backed by a local searchable cache; there is no whole-tailnet scan or hosted directory.
