@@ -4,7 +4,7 @@
 
 Let explicitly enrolled Codex, Claude Code, and other tool-capable agent sessions exchange questions, task requests, progress, results, and artifact references within the user's private network. The network can include multiple user-owned hosts and multiple sessions per host. Machines may belong to the same tailnet. Communication is asynchronous: a session can send a message while its peer is busy or offline.
 
-This is a proposed application protocol. MCP provides the local tool interface; HTTPS transports messages between machines.
+This is a proposed application protocol. Local hooks and a CLI provide the initial agent interface; HTTPS transports messages between machines. MCP is an optional tool interface.
 
 ## Required locality
 
@@ -19,18 +19,18 @@ Transport locality is separate from model processing. When an agent reads a mess
 ## Architecture
 
 - One persistent `parlerd` per machine, with a SQLite inbox and outbox independent of agent process lifetimes.
-- One local MCP adapter per session, communicating with the daemon through a Unix socket. A CLI exposes the same operations for sessions with shell access.
+- Client-specific command hooks and a shared CLI communicate with the daemon through a Unix socket. A later local MCP adapter can expose the same operations.
 - The network API listens on an explicitly chosen private interface with pinned TLS certificates. Local administration stays on a Unix socket.
 - Initial discovery uses explicitly configured private peer endpoints and offline pairing. Each peer advertises only sessions enrolled for that pairing; there is no whole-tailnet scan or hosted directory.
-- Suggested implementation: TypeScript with the official MCP SDK, an HTTP server, and SQLite. Library versions and client compatibility should be checked when implementation starts.
+- Suggested implementation: TypeScript with an HTTP server and SQLite, adding the official MCP SDK only when needed. Library versions and client compatibility should be checked when implementation starts.
 
-The local adapter binds a session credential at startup. The model cannot impersonate a different sender by supplying a `from` field.
+The local adapter binds a session credential at startup. The model cannot impersonate a different sender by supplying a `from` field. Hook and CLI invocations resolve a local credential binding keyed by client kind and native session ID; native IDs alone are not credentials. Concurrent sessions in one project must have distinct bindings. Automatic binding discovery and isolation must be validated for each client before implementation claims per-session authentication.
 
 ## Agent interoperability and multiple hosts
 
 The wire protocol does not contain provider-specific tool calls, transcript formats, or native session IDs. The same message can go from Codex to Claude Code, Claude Code to Codex, or between two sessions of the same client. Each session advertises `client_kind` (`codex`, `claude-code`, or `other`), adapter version, protocol versions, supported message kinds, and delivery modes. Client kind is informational; it is not a permission grant or proof of execution capability.
 
-Keep advertised task capabilities such as `code_review` separate from transport capabilities such as `poll` and `push`. Negotiate compatible protocol/message support before sending. Version 0 requires text messages and cooperative polling for both primary clients; optional push delivery cannot be assumed from client kind.
+Keep advertised task capabilities such as `code_review` separate from transport capabilities such as `hook_poll`, `poll`, and `push`. Negotiate compatible protocol/message support before sending. Version 0 requires text messages and hook-triggered inbox checks for both primary clients; optional push delivery cannot be assumed from client kind.
 
 Each daemon keeps a local table mapping paired node IDs to approved private endpoints and credentials. A sender addresses `<node_id>/<session_id>` and the daemon routes directly to that host. Sessions on the same host use local delivery without network forwarding. There is no global broker, transit routing, or gossip in version 0. Listing all peers queries configured reachable hosts and reports unavailable hosts explicitly rather than treating their sessions as gone. Discovery results can be cached with freshness timestamps.
 
@@ -46,7 +46,9 @@ Registration records an alias, optional project label, client kind, adapter/prot
 
 Adapters heartbeat a renewable lease. Presence is `online`, `stale`, or `closed`; presence does not imply that the model is currently thinking or available to reply. Messages to stale sessions can be queued until expiry. Closed sessions reject new messages. Resuming a session uses its existing credential and address; a new conversation gets a new address.
 
-## Shared tools available to agents
+## Shared operations available to agents
+
+Expose these operations through the CLI first and optionally through MCP using the tool names below. CLI input should support structured JSON on stdin or a file argument to avoid shell-escaping message bodies.
 
 | Tool | Purpose |
 | --- | --- |
@@ -102,9 +104,31 @@ Private-interface binding and firewall rules restrict which devices can reach th
 
 Treat peer content as external data. A message cannot override the receiving session's instructions, grant filesystem access, approve commands, or expand the user's authorized task. Logs record routing IDs and status by default, excluding credentials and message bodies. Enforce payload limits, rate limits, and bounded queues.
 
-## How messages reach a thinking session
+## Hook-first session integration
 
-The first milestone supports cooperative inbox checks: the agent calls `parler_receive` at task boundaries or while waiting for a response. An `AGENTS.md` snippet for Codex and a `CLAUDE.md` snippet for Claude Code can establish the same workflow. Both clients support local stdio MCP servers, so they can share the same tool adapter. Per-session credential binding is required even if MCP configuration is shared across projects. An ordinary MCP tool connection alone is not a promise of unsolicited messages appearing in model context or waking an idle session.
+Hooks integrate ordinary Codex and Claude Code sessions without a controller owning the entire conversation. Their configuration and output serializers are client-specific; the daemon, mailbox protocol, and CLI are shared.
+
+| Lifecycle event | Proposed Parler behavior |
+| --- | --- |
+| `SessionStart` | Register/resume the local binding; provide fixed CLI usage guidance and an inbox notice. |
+| `UserPromptSubmit` | Check locally for new pending messages and add a bounded notice. |
+| `PostToolUse` | Check locally while the agent works, throttled to avoid a read after every tool call. |
+| `Stop` | If unannounced pending messages exist, request at most one additional pass to inspect them. |
+| `SessionEnd` | Best-effort adapter detach; missed cleanup is handled by presence expiry. |
+
+Hooks perform quick local checks only; background forwarding handles the network. Daemon unavailability must not block the user's normal work. Use short explicit hook timeouts, bounded notices, and no inbox draining or acknowledgment inside the hook. The agent fetches message bodies through CLI tool output and acknowledges them after handling. A notice records that a message was announced, not that it was read or completed.
+
+Hook context contains only fixed local guidance and validated routing metadata/message IDs. Do not interpolate peer bodies into developer/system context or Stop continuation prompts. Peer text stays external data retrieved through tool output. Sending/replying is explicit through the CLI; do not broadcast every assistant response or parse transcript text to infer recipients.
+
+Both documented runtimes support context-producing hooks and Stop continuation decisions, but their output behavior differs. In particular, Codex Stop continuation uses `decision: block` with a reason. The serializer must use each installed client's supported format. Honor `stop_hook_active`, track announced message IDs, and enforce an independent continuation budget so pending/unacknowledged mail cannot create an endless loop. Concurrent hook invocations require atomic notice bookkeeping in the daemon.
+
+Hooks run when lifecycle events occur. They do not by themselves guarantee wakeup after a session is already idle. Messages received then remain in the local inbox until the next event or a separately enabled push/controller adapter delivers them. This limitation is an explicit acceptance criterion for the hook-first version.
+
+Before installation, verify the target client's version and hook support, and follow its normal hook trust/configuration flow. Codex requires review/trust of non-managed hook definitions. This proposal does not install or enable hooks automatically.
+
+## Optional MCP and automatic delivery
+
+An optional MCP interface lets an agent call `parler_receive` at task boundaries or while waiting for a response. An `AGENTS.md` snippet for Codex and a `CLAUDE.md` snippet for Claude Code can establish the same workflow. Both clients support local stdio MCP servers, so they can share the same tool adapter. Per-session credential binding is required even if MCP configuration is shared across projects. An ordinary MCP tool connection alone is not a promise of unsolicited messages appearing in model context or waking an idle session.
 
 For automatic delivery, add a launcher/controller that owns a Codex app-server session. Official app-server interfaces provide thread start/resume and turn start/steer. Deliver labeled peer data through a tool-output path where supported. Queue while busy by default; any steering mode requires an explicit policy and preserves the external-data boundary. The controller must implement approval handling and normal turn/event lifecycle management.
 
@@ -118,14 +142,15 @@ Both adapters read exclusively from their local daemon. A Claude channel for Par
 
 1. Local daemon and CLI: session identity, SQLite persistence, inbox leases, acknowledgments, and two-process messaging on one machine.
 2. Direct private transport: explicit pairing, pinned HTTPS forwarding, retries, deduplication, expiry, and restart recovery. Validate on two machines with external network access blocked for the daemons. Any optional tailnet mode requires an additional verified relay-exclusion design.
-3. MCP tools: session-bound adapters and documented cooperative inbox workflows for Codex and Claude Code. Demonstrate Codex-to-Claude Code and Claude Code-to-Codex request/result exchanges, plus routing across three user-owned hosts.
-4. Optional client-specific delivery adapters: Codex app-server, Claude Code channels where available, and/or a Claude Agent SDK controller. Use bounded wakeups and request budgets to prevent automatic reply loops.
+3. Hooks and CLI integration: session-bound adapters and documented inbox workflows for Codex and Claude Code. Demonstrate bidirectional request/result exchanges, concurrent sessions in one project, context separation, bounded Stop continuation, and routing across three user-owned hosts.
+4. Optional MCP tools and client-specific push adapters: Codex app-server, Claude Code channels where available, and/or a Claude Agent SDK controller. Use bounded wakeups and request budgets to prevent automatic reply loops.
 
 Meaningful acceptance checks include lost HTTP responses after persistence, duplicate retransmission, receiver restart, expired leases, sender spoofing, cross-session access denial, and a complete request/result exchange. Verify direct private routing with packet capture, successful transport while daemon internet access is blocked, and local queueing when the private route fails. A tailnet deployment must also prove that no message is sent through DERP during startup or after direct connectivity fails. Automatic wakeup is not part of the initial acceptance criteria.
 
 ## Primary references
 
 - [Official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli): local stdio and HTTP MCP configuration.
+- [Official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks): lifecycle context, Stop continuation, and client-specific hook behavior.
 - [Official Codex app-server documentation](https://learn.chatgpt.com/docs/app-server): thread and turn lifecycle interfaces for integrations.
 - [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp): local stdio MCP integration.
 - [Claude Code channels documentation](https://code.claude.com/docs/en/channels): push delivery to opted-in sessions and research-preview restrictions.
