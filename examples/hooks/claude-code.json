@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/ABSOLUTE/PATH/TO/node\" \"/ABSOLUTE/PATH/TO/parler/bin/parler-hook.mjs\" --client claude-code --state \"/ABSOLUTE/PATH/TO/private-parler-state\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/ABSOLUTE/PATH/TO/node\" \"/ABSOLUTE/PATH/TO/parler/bin/parler-hook.mjs\" --client claude-code --state \"/ABSOLUTE/PATH/TO/private-parler-state\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/ABSOLUTE/PATH/TO/node\" \"/ABSOLUTE/PATH/TO/parler/bin/parler-hook.mjs\" --client claude-code --state \"/ABSOLUTE/PATH/TO/private-parler-state\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/ABSOLUTE/PATH/TO/node\" \"/ABSOLUTE/PATH/TO/parler/bin/parler-hook.mjs\" --client claude-code --state \"/ABSOLUTE/PATH/TO/private-parler-state\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/ABSOLUTE/PATH/TO/node\" \"/ABSOLUTE/PATH/TO/parler/bin/parler-hook.mjs\" --client claude-code --state \"/ABSOLUTE/PATH/TO/private-parler-state\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

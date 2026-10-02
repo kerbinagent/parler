@@ -1,0 +1,18 @@
+{
+  "name": "parler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Private agent session messaging with hooks, discovery, and durable attachments",
+  "engines": { "node": ">=24.0.0" },
+  "bin": {
+    "parler": "bin/parler.mjs",
+    "parlerd": "bin/parlerd.mjs",
+    "parler-hook": "bin/parler-hook.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "node bin/parlerd.mjs",
+    "check": "node scripts/check.mjs"
+  }
+}
