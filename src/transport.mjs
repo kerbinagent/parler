@@ -239,10 +239,10 @@ export function multipartBody(envelope, attachments = []) {
   return { contentType: `multipart/form-data; boundary=${boundary}`, body: body() };
 }
 
-export async function requestPeer(peer, { method = 'GET', path, body, contentType, nodeId, timeoutMs = 10000, maxResponseBytes = LIMITS.snapshotBytes, signal }) {
+export async function requestPeer(peer, { method = 'GET', path, body, contentType, nodeId, timeoutMs = 10000, maxResponseBytes = LIMITS.snapshotBytes, signal, allowTailnet = false }) {
   const cancelled = new AppError('PEER_CANCELLED', 'Private peer request was cancelled', 503, true);
   if (signal?.aborted) throw cancelled;
-  const endpoint = new URL(privateEndpoint(peer.endpoint));
+  const endpoint = new URL(privateEndpoint(peer.endpoint, { allowTailnet }));
   identifier(nodeId, 'node id');
   if (typeof peer.token !== 'string' || !peer.token.length || peer.token.length > 4096 || /[^\x21-\x7e]/.test(peer.token)) throw new AppError('INVALID_PEER', 'Invalid peer authentication token');
   if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || /[\r\n#]/.test(path) || !/^[A-Z]+$/.test(method)) throw new AppError('INVALID_INPUT', 'Invalid peer request method or path');

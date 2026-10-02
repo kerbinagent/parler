@@ -132,27 +132,27 @@ export function validateAdmissionTime(envelope, now, maxTtlSeconds = DEFAULTS.ma
   if (Date.parse(envelope.expires_at) <= now) fail('MESSAGE_EXPIRED', 'Message delivery TTL expired', 410);
 }
 
-// A strict-local endpoint is a literal LAN/private IP. Tailnet addresses are
-// excluded because application-layer checks cannot prevent DERP fallback.
-// Operators must also enforce private routing at the OS/network layer.
-export function privateHost(host) {
+// Default endpoints are literal LAN/private IPs. Tailnet addresses require
+// explicit opt-in because application checks cannot prevent DERP fallback.
+// Private mode also needs OS/network enforcement of approved routing.
+export function privateHost(host, { allowTailnet = false } = {}) {
   if (typeof host !== 'string') return false;
   let value = host.replace(/^\[|\]$/g, '').toLowerCase();
   if (isIP(value) === 4) {
     const n = value.split('.').map(Number);
-    return n[0] === 127 || n[0] === 10 || (n[0] === 172 && n[1] >= 16 && n[1] <= 31) || (n[0] === 192 && n[1] === 168);
+    return n[0] === 127 || n[0] === 10 || (n[0] === 172 && n[1] >= 16 && n[1] <= 31) || (n[0] === 192 && n[1] === 168) || (allowTailnet && n[0] === 100 && n[1] >= 64 && n[1] <= 127);
   }
   if (isIP(value) === 6) {
     value = new URL(`https://[${value}]`).hostname.slice(1, -1);
-    return value === '::1' || (/^f[cd]/.test(value) && !value.startsWith('fd7a:115c:a1e0:'));
+    return value === '::1' || (/^f[cd]/.test(value) && (allowTailnet || !value.startsWith('fd7a:115c:a1e0:')));
   }
   return false;
 }
-export function privateEndpoint(input) {
+export function privateEndpoint(input, options = {}) {
   let url;
   try { url = new URL(input); } catch { fail('INVALID_ENDPOINT', 'Peer endpoint must be an HTTPS URL with a literal private IP'); }
-  if (url.protocol !== 'https:' || !privateHost(url.hostname) || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
-    fail('INVALID_ENDPOINT', 'Only direct HTTPS endpoints using literal private IPs are allowed; DNS, public IPs, proxies, and tailnet addresses are not supported');
+  if (url.protocol !== 'https:' || !privateHost(url.hostname, options) || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+    fail('INVALID_ENDPOINT', 'Only HTTPS endpoints using allowed literal private IPs are supported; tailnet addresses require tailscale network mode');
   }
   return url.origin;
 }

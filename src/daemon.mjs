@@ -97,11 +97,11 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
   let store, network, local, interval, closed = false, activeTick, dirty = true, lastSnapshot = 0, lastMaintenance = 0;
   const connections = new Set();
   const shutdown = new AbortController();
-  const requestPeer = (peer, options) => sendPeer(peer, { ...options, signal: shutdown.signal });
+  const requestPeer = (peer, options) => sendPeer(peer, { ...options, signal: shutdown.signal, allowTailnet: config.network_mode === 'tailscale' });
   const peerMap = new Map(config.peers.map(peer => [peer.node_id, peer]));
   const requestBudget = new Map();
   const activeUploads = new Set();
-  const info = { node_id: config.node_id, label: config.label, endpoint: config.endpoint, certificate, protocol: PROTOCOL, version: VERSION, limits: config.limits };
+  const info = { node_id: config.node_id, label: config.label, endpoint: config.endpoint, network_mode: config.network_mode, certificate, protocol: PROTOCOL, version: VERSION, limits: config.limits };
 
   const persistPeers = () => { config.peers = [...peerMap.values()]; saveConfig(stateDir, config); dirty = true; };
   const outgoingPeers = () => [...peerMap.values()].filter(peer => peer.token && peer.endpoint && peer.certificate);
@@ -277,7 +277,7 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
         const input = await readJson(request, config.limits.envelopeBytes);
         const node = identifier(input.node_id, 'invitation node id');
         if (node === config.node_id || input.for_node_id !== config.node_id) fail('INVALID_INVITATION', 'Invitation is not addressed to this host');
-        const endpoint = privateEndpoint(input.endpoint);
+        const endpoint = privateEndpoint(input.endpoint, { allowTailnet: config.network_mode === 'tailscale' });
         validateCertificate(input.certificate); cleanText(input.label, 'peer label', 80);
         if (!/^[a-f0-9]{64}$/.test(input.token)) fail('INVALID_INVITATION', 'Invalid invitation credential');
         if (peerMap.size >= 256 && !peerMap.has(node)) fail('LIMIT_EXCEEDED', 'Too many peers', 413);

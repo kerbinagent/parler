@@ -9,7 +9,7 @@ flowchart LR
     DB <-->|Local hooks and CLI| B[Main Claude Code session]
 ```
 
-There is no hosted broker, storage service, discovery service, or relay. Daemons connect directly to explicitly paired peers, with pinned TLS certificates and peer credentials. When a peer is unavailable, persisted outgoing messages retry until their TTL expires. The sender and recipient daemons retain their own verified attachment copies, so a recipient can export a deliverable after the sender goes offline.
+Parler has no hosted broker, storage service, or discovery service. Its default LAN mode excludes relay transport; explicit Tailscale mode permits encrypted Tailscale relay fallback. Daemons connect directly to explicitly paired peers, with pinned TLS certificates and peer credentials. When a peer is unavailable, persisted outgoing messages retry until their TTL expires. The sender and recipient daemons retain their own verified attachment copies, so a recipient can export a deliverable after the sender goes offline.
 
 Only the main agent coordinates Parler. Subagents do assigned work and return their results to their parent; they do not enroll, discover sessions, send messages, or consume the parent's mailbox. The repository's [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) describe this policy. Hook adapters ignore identifiable subagent events and registration rejects explicit subagent roles. These workflow controls do not isolate processes running as the same operating-system user from that user's credentials.
 
@@ -38,9 +38,27 @@ export PARLER_STATE="$HOME/.local/state/parler"
 
 `--state /absolute/path` overrides `PARLER_STATE`. The fallback is `.parler` in the current directory, which is useful for isolated experiments but easy to split accidentally across projects. State contains local secrets, session bindings, SQLite mailboxes, and attachment copies. Parler creates private state directories and credential files; keep the state out of version control.
 
+## Install into local Codex and Claude Code
+
+Run this from the clone in a normal terminal. For a host on Tailscale:
+
+```bash
+node scripts/install-local.mjs --network-mode tailscale --listen "$(tailscale ip -4)"
+```
+
+For LAN-only operation, use `--network-mode private --listen YOUR_LAN_IP` instead. Add `--dry-run` to inspect the changes first. Node 24+ and OpenSSL must already be installed. This initializes `~/.local/state/parler`, installs commands in `~/.local/bin`, and merges user-level hooks into `~/.codex/hooks.json` and `~/.claude/settings.json` (honoring `CODEX_HOME` and `CLAUDE_CONFIG_DIR`). Existing settings and hooks are preserved, changed files are backed up, and rerunning the same installation is idempotent. It refuses to overwrite unrelated commands or silently change an existing state's listener policy. Keep the clone at its installed path.
+
+The installed wrappers pass the fixed state path automatically. Ensure `~/.local/bin` is on `PATH`, or use the full path. The installer leaves the daemon stopped. Start it outside the agent sandbox and keep the terminal open:
+
+```bash
+~/.local/bin/parler daemon
+```
+
+In another terminal, run `~/.local/bin/parler info`. Restart or resume client sessions to load the hooks. In Codex, open `/hooks` and review/trust the five Parler hooks before they can run. Existing hook trust is preserved. No client model calls or trust bypass are part of installation. Pair each host in both directions using the steps below; installation alone does not establish peer credentials.
+
 ## Start two hosts
 
-Choose each host's actual private LAN address. These example addresses must be replaced if they do not belong to your machines. Initialize once on **host A**:
+Choose each host's actual private LAN address (or use its literal Tailscale IP with `--network-mode tailscale`). These example addresses must be replaced if they do not belong to your machines. Initialize once on **host A**:
 
 ```bash
 node bin/parler.mjs init --label workstation --listen 192.168.1.10 --port 7743
@@ -216,9 +234,11 @@ Inspect each message's `retain_until` for its actual retention deadline. Reserva
 
 ## Private-network boundary
 
-The current transport accepts **literal private LAN IP addresses**: RFC 1918 IPv4 and supported private IPv6, plus loopback for local testing. DNS names, public IPs, wildcard listeners, Tailscale `100.64.0.0/10` addresses, and Tailscale's `fd7a:115c:a1e0::/48` range are rejected. This version does **not** support tailnet transport. Tailscale membership alone cannot guarantee that traffic avoids cloud DERP relays.
+The default `private` mode accepts **literal private LAN IP addresses**: RFC 1918 IPv4 and supported private IPv6, plus loopback for local testing. It rejects Tailscale addresses. DNS names, public IPs, wildcard listeners, credentials in URLs, redirects, and HTTP proxies are rejected in both modes.
 
-Parler uses direct sockets with no HTTP proxy or relay fallback. You remain responsible for ensuring the host routes and firewall keep those private endpoints on your own network; an application cannot prove how an operating-system route carries packets. Messages stay queued when the approved direct connection fails.
+Explicit `--network-mode tailscale` additionally admits the Tailscale IPv4 range `100.64.0.0/10` and IPv6 range `fd7a:115c:a1e0::/48`. Use the host's `tailscale ip -4` value as its listener and pair literal tailnet endpoints. This mode allows direct, peer-relayed, and cloud DERP-relayed Tailscale connections. Tailscale keeps those connections end-to-end encrypted; Parler also retains its pinned TLS and directional credentials. It is an explicit relaxation of the default no-cloud-transport policy. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
+
+Parler uses direct application sockets with no hosted Parler mailbox or fallback service. In private mode, ensure host routing/firewalls keep endpoints on approved private paths; address syntax cannot prove the operating-system route. In Tailscale mode, ensure your tailnet policy permits the selected hosts and TCP port. Messages stay queued when the connection fails.
 
 Private transport is separate from model inference. Once Codex or Claude Code reads a message or attachment through a tool, that content can become input to the client's configured model service. Parler does not make cloud-backed inference local.
 

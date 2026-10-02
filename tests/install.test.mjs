@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { installLocal } from '../scripts/install-local.mjs';
+import { loadConfig, initState, saveConfig } from '../src/config.mjs';
+
+test('local installation preserves existing hooks/settings and is idempotent without starting a daemon', t => {
+  const home = mkdtempSync(join(tmpdir(), 'parler-install-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const codexHome = join(home, '.codex'), claudeHome = join(home, '.claude');
+  mkdirSync(codexHome); mkdirSync(claudeHome);
+  const original = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'existing-hook' }] }] } };
+  writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify(original));
+  writeFileSync(join(claudeHome, 'settings.json'), JSON.stringify({ ...original, theme: 'dark', permissions: { allow: ['Read'] } }));
+  const options = { home, codexHome, claudeHome, listen: '100.111.4.97', networkMode: 'tailscale' };
+  const plan = installLocal({ ...options, dryRun: true });
+  assert.equal(plan.changed_files.length, 5);
+  assert.equal(readdirSync(home).length, 2, 'Dry run writes nothing');
+  const result = installLocal(options);
+  assert.equal(result.backups.length, 2);
+  assert.equal(loadConfig(result.state_dir).network_mode, 'tailscale');
+  assert.equal(readdirSync(result.state_dir).includes('daemon.sock'), false);
+  const settings = JSON.parse(readFileSync(join(claudeHome, 'settings.json')));
+  assert.equal(settings.theme, 'dark');
+  assert.deepEqual(settings.permissions, { allow: ['Read'] });
+  assert.equal(settings.hooks.SessionStart[0].hooks[0].command, 'existing-hook');
+  assert.equal(settings.hooks.SessionStart.length, 2);
+  assert.equal(settings.hooks.SubagentStart, undefined);
+  assert.equal(installLocal(options).changed_files.length, 0);
+  assert.throws(() => installLocal({ ...options, networkMode: 'private' }), /allowed private listener/);
+  writeFileSync(join(home, '.local/bin/parler'), '#!/bin/sh\necho unrelated\n');
+  assert.throws(() => installLocal(options), /unrelated command/);
+});
+
+test('configuration admits tailnet peers only in explicit tailscale mode', t => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'parler-network-mode-'));
+  t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  assert.throws(() => initState({ stateDir, listen: '100.111.4.97' }), { code: 'INVALID_ENDPOINT' });
+  initState({ stateDir, listen: '127.0.0.1' });
+  const config = loadConfig(stateDir);
+  config.peers.push({ node_id: 'tailnet-peer', endpoint: 'https://100.100.1.2:7743' });
+  assert.throws(() => saveConfig(stateDir, config), { code: 'INVALID_ENDPOINT' });
+  config.network_mode = 'tailscale';
+  saveConfig(stateDir, config);
+  assert.equal(loadConfig(stateDir).peers.length, 1);
+  config.network_mode = 'invalid';
+  assert.throws(() => saveConfig(stateDir, config), { code: 'INVALID_STATE' });
+});

@@ -17,3 +17,16 @@ test('attachment metadata enforces independent file and combined size limits', (
   assert.throws(() => attachmentManifest([{ ...item('a', 0), filename: '../private.md' }]), { code: 'INVALID_INPUT' });
   assert.equal(attachmentManifest([item('a', LIMITS.fileBytes)]).length, 1);
 });
+
+test('tailnet endpoints require explicit opt-in and never permit public or DNS endpoints', () => {
+  const options = { allowTailnet: true };
+  for (const host of ['100.64.0.1', '100.111.4.97', '100.127.255.254', 'fd7a:115c:a1e0::2']) {
+    assert.equal(privateHost(host), false);
+    assert.equal(privateHost(host, options), true);
+    const literal = host.includes(':') ? `[${host}]` : host;
+    assert.throws(() => privateEndpoint(`https://${literal}:7743`), { code: 'INVALID_ENDPOINT' });
+    assert.ok(privateEndpoint(`https://${literal}:7743`, options));
+  }
+  for (const host of ['100.63.255.254', '100.128.0.1', '8.8.8.8', 'host.tailnet.ts.net']) assert.equal(privateHost(host, options), false);
+  for (const endpoint of ['https://8.8.8.8', 'https://host.tailnet.ts.net', 'http://100.111.4.97', 'https://100.111.4.97/path']) assert.throws(() => privateEndpoint(endpoint, options), { code: 'INVALID_ENDPOINT' });
+});

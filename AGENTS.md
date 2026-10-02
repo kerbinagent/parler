@@ -3,8 +3,10 @@
 Use Node 24 or newer. The runtime has no external package dependencies. Run
 `npm test` and `npm run check` before committing behavioral changes.
 
-Keep network traffic limited to explicit private peer endpoints. Do not add
-hosted brokers, telemetry, cloud discovery, or automatic relay fallback.
+Keep network traffic limited to explicit paired private peer endpoints. The
+default private mode must reject tailnet addresses; explicit tailscale mode
+permits encrypted Tailscale relay fallback. Do not add hosted Parler brokers,
+telemetry, cloud discovery, or an implicit switch to Tailscale mode.
 Attachment receipt must mean all bytes are verified and durably stored before
 the corresponding message becomes visible. Never log tokens or message bodies.
 

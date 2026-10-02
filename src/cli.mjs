@@ -4,12 +4,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AppError, LIMITS, attachmentManifest, filename, identifier } from './common.mjs';
 import { localRequest, saveBinding, resolveBinding, adminToken } from './local-client.mjs';
 
-const valueOptions = new Set(['state', 'session', 'client', 'format', 'label', 'listen', 'port', 'worker-interval-ms', 'for', 'output', 'native-id', 'workspace', 'title', 'project-label', 'task-summary', 'tag', 'query', 'client-kind', 'project', 'peer', 'to', 'kind', 'text', 'reply-to', 'conversation-id', 'ttl-seconds', 'attach', 'json', 'limit', 'wait-seconds', 'message', 'delivery-token', 'attachment']);
+const valueOptions = new Set(['state', 'session', 'client', 'format', 'label', 'listen', 'port', 'network-mode', 'worker-interval-ms', 'for', 'output', 'native-id', 'workspace', 'title', 'project-label', 'task-summary', 'tag', 'query', 'client-kind', 'project', 'peer', 'to', 'kind', 'text', 'reply-to', 'conversation-id', 'ttl-seconds', 'attach', 'json', 'limit', 'wait-seconds', 'message', 'delivery-token', 'attachment']);
 const repeatOptions = new Set(['attach', 'tag']);
 const HELP = `Parler: private session messages and attachments
 Usage: parler [--state DIR] [--session ADDRESS|NATIVE_ID] COMMAND
 
-  init [--label NAME --listen PRIVATE_IP --port PORT]
+  init [--label NAME --listen PRIVATE_IP --port PORT --network-mode private|tailscale]
   daemon [--worker-interval-ms N]
   info
   peer export --for NODE_ID --output FILE
@@ -180,7 +180,7 @@ export async function runCli(args = process.argv.slice(2), { stdin = process.std
       case 'init': {
         one();
         const { initState } = await import('./config.mjs');
-        const info = await initState({ stateDir, label: o.label, listen: o.listen, port: integer(o.port, 'port', { min: 0, max: 65535 }) });
+        const info = await initState({ stateDir, label: o.label, listen: o.listen, port: integer(o.port, 'port', { min: 0, max: 65535 }), networkMode: o['network-mode'] });
         result = { node_id: info.node_id, label: info.label, endpoint: info.endpoint }; break;
       }
       case 'daemon': {

@@ -28,9 +28,10 @@ export function writePrivateJson(path, value) {
 export function endpointFor(listen, port) {
   return `https://${listen.includes(':') ? `[${listen}]` : listen}:${port}`;
 }
-export function initState({ stateDir = '.parler', label = 'parler-host', listen = '127.0.0.1', port = 7743, limits = {}, timing = {} } = {}) {
+export function initState({ stateDir = '.parler', label = 'parler-host', listen = '127.0.0.1', port = 7743, networkMode = 'private', limits = {}, timing = {} } = {}) {
   stateDir = resolve(stateDir);
-  if (!privateHost(listen)) fail('INVALID_ENDPOINT', 'Listener must be a literal LAN/private IP; wildcard, public, and tailnet addresses are unsupported');
+  if (!['private', 'tailscale'].includes(networkMode)) fail('INVALID_INPUT', 'Network mode must be private or tailscale');
+  if (!privateHost(listen, { allowTailnet: networkMode === 'tailscale' })) fail('INVALID_ENDPOINT', 'Listener must be an allowed literal private IP; tailnet addresses require tailscale network mode');
   port = Number(port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) fail('INVALID_INPUT', 'Port must be an integer between 0 and 65535');
   cleanText(label, 'host label', 80);
@@ -46,7 +47,7 @@ export function initState({ stateDir = '.parler', label = 'parler-host', listen 
     throw new AppError('CERTIFICATE_INIT_FAILED', `Could not create a local certificate with openssl: ${error.code ?? 'generation failed'}`, 500);
   }
   const config = {
-    version: VERSION, node_id: nodeId, label, listen, port,
+    version: VERSION, node_id: nodeId, label, listen, port, network_mode: networkMode,
     endpoint: endpointFor(listen, port),
     limits: { ...LIMITS, ...limits }, timing: { ...DEFAULTS, ...timing },
     peers: [],
@@ -55,12 +56,14 @@ export function initState({ stateDir = '.parler', label = 'parler-host', listen 
   writePrivateJson(join(stateDir, 'config.json'), config);
   writeFileSync(join(stateDir, 'admin.token'), randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
   privateDirectory(join(stateDir, 'bindings'));
-  return { node_id: nodeId, label, endpoint: config.endpoint, state_dir: stateDir };
+  return { node_id: nodeId, label, endpoint: config.endpoint, network_mode: networkMode, state_dir: stateDir };
 }
 
 function validateConfig(config) {
+  config.network_mode ??= 'private';
+  if (!['private', 'tailscale'].includes(config.network_mode)) fail('INVALID_STATE', 'Invalid network mode');
   identifier(config.node_id, 'node id'); cleanText(config.label, 'host label', 80);
-  if (!privateHost(config.listen)) fail('INVALID_STATE', 'Configured listener must be a private IP');
+  if (!privateHost(config.listen, { allowTailnet: config.network_mode === 'tailscale' })) fail('INVALID_STATE', 'Configured listener must be an allowed private IP');
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) fail('INVALID_STATE', 'Invalid listen port');
   for (const [key, value] of Object.entries(config.limits ?? {})) {
     if (!(key in LIMITS) || !Number.isSafeInteger(value) || value < 1) fail('INVALID_STATE', `Invalid limit ${key}`);
@@ -77,7 +80,7 @@ function validateConfig(config) {
     identifier(peer.node_id, 'peer node id');
     if (nodes.has(peer.node_id) || peer.node_id === config.node_id) fail('INVALID_STATE', 'Duplicate or self peer');
     nodes.add(peer.node_id);
-    if (peer.endpoint) privateEndpoint(peer.endpoint);
+    if (peer.endpoint) privateEndpoint(peer.endpoint, { allowTailnet: config.network_mode === 'tailscale' });
     if (peer.certificate) validateCertificate(peer.certificate);
     for (const key of ['token', 'incoming_token']) if (peer[key] !== undefined && !/^[a-f0-9]{64}$/.test(peer[key])) fail('INVALID_STATE', `Invalid peer ${key}`);
     for (const key of ['allowed_sources', 'allowed_destinations']) {

@@ -2,7 +2,7 @@
 
 Parler hooks enroll a main session, announce new inbox messages, and give the main agent explicit CLI commands. They never read peer message bodies or attachments into lifecycle context. Only the main agent coordinates Parler communication: subagents do assigned work and return their results to the parent. Subagents must not enroll, discover recipients, send messages, or consume the parent's inbox.
 
-Use Node 24 or later, initialize a private state directory, and keep its daemon running before enabling hooks. The examples are templates, with absolute paths that must be replaced for your machine:
+Use Node 24 or later, initialize a private state directory, and keep its daemon running before enabling hooks. The [local installer](../README.md#install-into-local-codex-and-claude-code) merges both user-level hook configurations with backups and leaves daemon startup and Codex trust review to you. The examples are templates, with absolute paths that must be replaced for your machine:
 
 - [Codex config](../examples/hooks/codex.json)
 - [Claude Code config](../examples/hooks/claude-code.json)
