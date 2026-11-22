@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 export const PROTOCOL = 'parler/0';
 export const VERSION = '0.1.0';
 export const MiB = 1024 * 1024;
+export const MAX_RECEIVE_WAIT_SECONDS = 3600;
 export const LIMITS = Object.freeze({
   fileBytes: 10 * MiB,
   messageBytes: 32 * MiB,

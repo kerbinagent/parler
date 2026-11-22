@@ -353,6 +353,12 @@ export class Store {
       return { messages };
     });
   }
+  nextInboxLease(id) {
+    // A lease that ends at message expiry can never make the message deliverable again.
+    return this.db.prepare(`SELECT min(lease) AS next FROM messages
+      WHERE owner=? AND direction='inbox' AND status='persisted_remote' AND lease<expires AND expires>?`)
+      .get(id, this.now()).next;
+  }
   ack(id, messageId, token) {
     return this.transaction(() => {
       const row = this.findMessage(id, messageId, 'inbox');

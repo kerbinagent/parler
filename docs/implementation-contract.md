@@ -50,7 +50,7 @@ Session Bearer token routes:
 - `POST /local/session/close`.
 - `GET /local/sessions?query=&client_kind=&project=&peer=&refresh=1`: search/refresh discovery.
 - `POST /local/messages`: JSON or multipart. Local envelope input `{to,kind,body:{text},attachments?,reply_to?,conversation_id?,ttl_seconds?}`. Daemon supplies sender/IDs/timestamps; rewrites attachment IDs after upload. Returns queued receipt.
-- `GET /local/messages?limit=&wait_seconds=`: lease inbox messages.
+- `GET /local/messages?limit=&wait_seconds=` leases available inbox messages. An optional wait of up to 3600 seconds ends when mail is available or the deadline is reached. A timeout with no available mail returns `{"messages":[]}`.
 - `GET /local/messages/:id`: status.
 - `POST /local/messages/:id/ack`: `{delivery_token}`.
 - `GET /local/messages/:id/attachments`: authorized manifest/retention.

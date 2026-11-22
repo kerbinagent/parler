@@ -1,7 +1,7 @@
 import { promises as fs, constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { AppError, LIMITS, attachmentManifest, filename, identifier } from './common.mjs';
+import { AppError, LIMITS, MAX_RECEIVE_WAIT_SECONDS, attachmentManifest, filename, identifier } from './common.mjs';
 import { localRequest, saveBinding, resolveBinding, adminToken } from './local-client.mjs';
 
 const valueOptions = new Set(['state', 'session', 'client', 'format', 'label', 'listen', 'port', 'network-mode', 'worker-interval-ms', 'for', 'output', 'native-id', 'workspace', 'title', 'project-label', 'task-summary', 'tag', 'query', 'client-kind', 'project', 'peer', 'to', 'kind', 'text', 'reply-to', 'conversation-id', 'ttl-seconds', 'attach', 'json', 'limit', 'wait-seconds', 'message', 'delivery-token', 'attachment']);
@@ -23,6 +23,7 @@ Usage: parler [--state DIR] [--session ADDRESS|NATIVE_ID] COMMAND
        [--attach FILE ... --reply-to ID --conversation-id ID --ttl-seconds N]
        [--json FILE|-] (without --text or --json, read JSON stdin)
   receive [--limit N --wait-seconds N]
+       Wait up to ${MAX_RECEIVE_WAIT_SECONDS} seconds for inbox mail (default 0). Timeout returns {"messages":[]}.
   ack --message ID --delivery-token TOKEN
   status --message ID
   attachments list --message ID
@@ -247,10 +248,10 @@ export async function runCli(args = process.argv.slice(2), { stdin = process.std
       case 'receive': {
         one(); const query = new URLSearchParams();
         const limit = integer(o.limit, 'limit', { min: 1, max: 100 });
-        const wait = integer(o['wait-seconds'], 'wait seconds', { min: 0, max: 30 });
+        const wait = integer(o['wait-seconds'], 'wait seconds', { min: 0, max: MAX_RECEIVE_WAIT_SECONDS });
         if (limit !== undefined) query.set('limit', limit);
         if (wait !== undefined) query.set('wait_seconds', wait);
-        result = await request('GET', `/local/messages?${query}`, undefined, { timeoutMs: ((wait || 0) + 10) * 1000, maxResponseBytes: (limit ?? 20) * (LIMITS.envelopeBytes + 1024) + 1024 }); break;
+        result = await request('GET', `/local/messages?${query}`, undefined, { timeoutMs: ((wait ?? 0) + 10) * 1000, maxResponseBytes: (limit ?? 20) * (LIMITS.envelopeBytes + 1024) + 1024 }); break;
       }
       case 'ack': one(); result = await request('POST', `/local/messages/${identifier(required(o, 'message'))}/ack`, { delivery_token: required(o, 'delivery-token') }); break;
       case 'status': one(); result = await request('GET', `/local/messages/${identifier(required(o, 'message'))}`); break;

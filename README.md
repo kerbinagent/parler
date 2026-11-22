@@ -207,13 +207,23 @@ node bin/parler.mjs --session 'A_ADDRESS' ack --message 'RESULT_ID' \
 
 Take `ATTACHMENT_ID` from the received result or attachment manifest, and take the delivery token from `receive`. Export is relative to the **registered session workspace**, creates parent directories, rejects traversal and symlinks, and refuses to overwrite existing files. The CLI verifies size and SHA-256 again. Receive leases last 60 seconds by default; unacknowledged messages become available again after the lease expires. Save returned IDs and tokens so you can acknowledge handled messages without another receive call.
 
+When the pipeline expects another assignment, have the worker run one foreground command before ending its turn.
+
+```bash
+parler --session 'B_ADDRESS' receive --wait-seconds 120
+```
+
+Omit `--wait-seconds` or set it to `0` for an immediate check. A positive wait accepts up to `3600` seconds. It returns immediately if mail is already available, or when the daemon receives mail for the session. A timeout exits successfully with `{"messages":[]}`. Give the command runner a longer timeout than the requested wait. The daemon holds the local request open, so the agent can wait without recurring model checks or a separate monitor. Use the delivery tokens in the response to acknowledge handled messages as usual.
+
+After updating the checkout, restart the daemon on each host where agents will use the longer wait. The waiting agent's local daemon handles the entire wait, so a host that only sends messages can keep its current daemon. Existing pairing and session state carry over.
+
 ## Hook integration
 
 Use the [Codex template](examples/hooks/codex.json) or [Claude Code template](examples/hooks/claude-code.json), replacing their absolute path placeholders. Follow the [hook setup and trust instructions](docs/hooks.md) for the selected client; the repository does not install hooks automatically. Codex requires review and trust of the exact hook definitions through its normal `/hooks` flow.
 
 Hooks enroll main sessions, touch presence, and announce validated pending message IDs at startup, prompt, and tool boundaries. A Stop hook can request one bounded continuation to inspect new mail. Peer titles, bodies, and files are never inserted into lifecycle control context; the main agent retrieves them through CLI output and treats them as external data. Invalid input or daemon downtime preserves the client's normal flow.
 
-Hooks **cannot wake a session that is already idle**. Incoming mail remains stored until its next lifecycle event or an explicit CLI poll. Push controllers and MCP adapters are not implemented in this version.
+Hooks **cannot wake a session whose turn has ended**. Incoming mail remains stored until the next lifecycle event or an explicit receive command. During a turn, the agent can use `receive --wait-seconds` to wait for an expected message. Push controllers and MCP adapters are not implemented in this version.
 
 ## Same-host operation without Tailscale
 
@@ -255,6 +265,6 @@ npm test
 npm run check
 ```
 
-The automated suite exercises storage, transfer validation, local session isolation, hook behavior, and six integration scenarios using local daemon instances. Integration coverage includes Codex/Claude discovery and Markdown exchange across two daemon instances, independent recipient attachment copies after sender shutdown, retries and deduplication, authentication/ownership rejection, size and integrity checks, quota handling, and local attachment delivery with an unavailable network interface followed by listener recovery. Tests do not launch live Codex or Claude Code clients or claim a production multi-host deployment has been exercised.
+The automated suite exercises storage, transfer validation, local session isolation, hook behavior, and integration scenarios using local daemon instances. Integration coverage includes Codex/Claude discovery and Markdown exchange across two daemon instances, foreground receive and timeout, independent recipient attachment copies after sender shutdown, retries and deduplication, authentication/ownership rejection, size and integrity checks, quota handling, and local attachment delivery with an unavailable network interface followed by listener recovery. Tests do not launch live Codex or Claude Code clients or claim a production multi-host deployment has been exercised.
 
 See the [protocol](docs/protocol-v0.md), [attachment design](docs/attachments-v0.md), [discovery design](docs/discovery-v0.md), and [hook guide](docs/hooks.md) for further detail.

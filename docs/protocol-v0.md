@@ -55,7 +55,7 @@ Expose these operations through the CLI first and optionally through MCP using t
 | `parler_sessions(peer?, query?, client_kind?, project?)` | Search enrolled sessions by title/task/tags and list candidates with addresses, client type, presence, freshness, and capabilities. |
 | `parler_session_update(title?, task_summary?, project_label?, tags?)` | Update the calling session's discovery metadata and advertise it to allowed peers. |
 | `parler_send(to, kind, body, attachments?, conversation_id?, reply_to?, ttl_seconds?)` | Persist a message and immutable attachment copies locally; return its ID and delivery status. |
-| `parler_receive(limit?, wait_seconds?)` | Fetch pending messages for the adapter's bound session with temporary delivery leases; bounded long polling, at most 30 seconds. |
+| `parler_receive(limit?, wait_seconds?)` | Fetch available messages for the adapter's bound session with temporary delivery leases. Wait up to 3600 seconds and return an empty batch on timeout. |
 | `parler_ack(message_id, delivery_token)` | Acknowledge a received message after its contents have been handled or retained in session context. |
 | `parler_status(message_id)` | Inspect local persistence, remote persistence, acknowledgment, or expiry. |
 | `parler_attachment_list(message_id)` | List attachment IDs, names, types, sizes, hashes, and retention deadlines for an authorized message. |

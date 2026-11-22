@@ -84,7 +84,7 @@ async function cli(node, args, { success = true } = {}) {
   return result;
 }
 
-async function fixture(t, count = 2, { limits = {} } = {}) {
+async function fixture(t, count = 2, { limits = {}, timing = {} } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'parler-integration-'));
   const nodes = [];
   t.after(async () => {
@@ -96,7 +96,7 @@ async function fixture(t, count = 2, { limits = {} } = {}) {
     nodes.push(node);
     await mkdir(node.workspace);
     await initState({ stateDir: node.stateDir, label: `host-${i}`, listen: '127.0.0.1', port: 0,
-      timing: { snapshotSeconds: 1 }, limits });
+      timing: { snapshotSeconds: 1, ...timing }, limits });
     node.admin = (await readFile(path.join(node.stateDir, 'admin.token'), 'utf8')).trim();
     node.daemon = await startDaemon({ stateDir: node.stateDir, workerIntervalMs: 20 });
     node.info = await ok(node, 'GET', '/local/info');
@@ -361,19 +361,56 @@ test('an attachment retry succeeds when its original delivery filled host and se
   assert.deepEqual((await local(b, 'GET', `/local/messages/${message.id}/attachments/${descriptor.id}`, undefined, recipient.token)).bytes, bytes);
 });
 
-test('same-host attachment delivery reuses stored bytes when the physical host quota is full', { timeout: 20_000 }, async t => {
+test('a foreground receive wakes for remote mail, redelivery, or its own deadline', { timeout: 20_000 }, async t => {
+  const [a, b] = await fixture(t, 2, { timing: { leaseSeconds: 1 } });
+  await pair(a, b);
+  const sender = await register(a, 'codex', 'Orchestrator');
+  const worker = await register(b, 'codex', 'Worker waiting for work');
+  const receive = t.mock.method(b.daemon.store, 'receive');
+  const workerCli = (...args) => cli(b, ['--session', worker.address, ...args]);
+  const [received, sent] = await Promise.all([
+    workerCli('receive', '--wait-seconds', '120'),
+    (async () => {
+      await waitFor(() => receive.mock.callCount() > 0, 'worker to start waiting');
+      await delay(250);
+      assert.equal(receive.mock.callCount(), 1, 'An idle wait does not keep polling the inbox');
+      return ok(a, 'POST', '/local/messages', { to: worker.address, kind: 'request', body: { text: 'Next assignment' } }, sender.token);
+    })(),
+  ]);
+  assert.equal(received.json.messages.length, 1);
+  assert.equal(received.json.messages[0].id, sent.id);
+
+  const redelivered = await workerCli('receive', '--wait-seconds', '3');
+  assert.equal(redelivered.json.messages.length, 1);
+  const message = redelivered.json.messages[0];
+  assert.equal(message.id, sent.id);
+  assert.notEqual(message.delivery_token, received.json.messages[0].delivery_token);
+  await ok(b, 'POST', `/local/messages/${message.id}/ack`, { delivery_token: message.delivery_token }, worker.token);
+
+  const start = performance.now();
+  const timedOut = await workerCli('receive', '--wait-seconds', '1');
+  assert.deepEqual(timedOut.json, { messages: [] });
+  assert.ok(performance.now() - start >= 990, 'An empty wait stays open until the requested timeout');
+});
+
+test('same-host attachment delivery wakes a waiting receiver and reuses stored bytes at full quota', { timeout: 20_000 }, async t => {
   const bytes = Buffer.alloc(32, 'l');
   const [node] = await fixture(t, 1, { limits: { hostBytes: bytes.length, sessionBytes: bytes.length } });
   const sender = await register(node, 'codex', 'Local sender');
   const recipient = await register(node, 'claude-code', 'Local researcher');
   const source = path.join(node.workspace, 'local.md');
   await writeFile(source, bytes);
-  const sent = await cli(node, ['--session', sender.address, 'send', '--to', recipient.address,
-    '--kind', 'result', '--text', 'Local deliverable.', '--attach', source]);
-  const message = await waitFor(async () => {
-    const inbox = await ok(node, 'GET', '/local/messages', undefined, recipient.token);
-    return inbox.messages.find(item => item.id === sent.json.id);
-  }, 'same-host delivery at physical host capacity');
+  const receive = t.mock.method(node.daemon.store, 'receive');
+  const [inbox, sent] = await Promise.all([
+    cli(node, ['--session', recipient.address, 'receive', '--wait-seconds', '120']),
+    (async () => {
+      await waitFor(() => receive.mock.callCount() > 0, 'local receiver to start waiting');
+      return cli(node, ['--session', sender.address, 'send', '--to', recipient.address,
+        '--kind', 'result', '--text', 'Local deliverable.', '--attach', source]);
+    })(),
+  ]);
+  const [message] = inbox.json.messages;
+  assert.equal(message.id, sent.json.id);
   assert.equal(node.daemon.store.hostBytes(), bytes.length);
   assert.equal(node.daemon.store.sessionBytes(sender.session_id), bytes.length);
   assert.equal(node.daemon.store.sessionBytes(recipient.session_id), bytes.length);

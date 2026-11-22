@@ -5,8 +5,7 @@ import { once } from 'node:events';
 import { createReadStream, existsSync, readFileSync, unlinkSync, chmodSync, writeFileSync, openSync, closeSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import { AppError, PROTOCOL, VERSION, address, identifier, equalSecret, cleanText, sessionPatch, validateEnvelope, validateAdmissionTime, attachmentManifest, privateEndpoint, fail } from './common.mjs';
+import { AppError, PROTOCOL, VERSION, MAX_RECEIVE_WAIT_SECONDS, address, identifier, equalSecret, cleanText, sessionPatch, validateEnvelope, validateAdmissionTime, attachmentManifest, privateEndpoint, fail } from './common.mjs';
 import { loadConfig, saveConfig, privateDirectory, endpointFor, validateCertificate } from './config.mjs';
 import { Store } from './store.mjs';
 import { readJson, readMultipart, multipartBody, requestPeer as sendPeer } from './transport.mjs';
@@ -104,6 +103,7 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
   const peerMap = new Map(config.peers.map(peer => [peer.node_id, peer]));
   const requestBudget = new Map();
   const activeUploads = new Set();
+  const inboxWaiters = new Map();
   const info = { node_id: config.node_id, label: config.label, endpoint: config.endpoint, network_mode: config.network_mode, certificate, protocol: PROTOCOL, version: VERSION, limits: config.limits };
 
   const persistPeers = () => { config.peers = [...peerMap.values()]; saveConfig(stateDir, config); dirty = true; };
@@ -181,6 +181,32 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
     if (Buffer.byteLength(JSON.stringify(input)) > config.limits.envelopeBytes) fail('LIMIT_EXCEEDED', 'Message envelope is too large', 413);
   }
 
+  function putMessage(message) {
+    const receipt = store.putMessage(message);
+    if (message.direction === 'inbox' && receipt.status === 'persisted_remote') {
+      const waiters = inboxWaiters.get(address(message.envelope.to).sessionId);
+      for (const wake of waiters ?? []) wake();
+    }
+    return receipt;
+  }
+
+  function waitForInbox(id, response, milliseconds) {
+    return new Promise(resolveWait => {
+      const waiters = inboxWaiters.get(id) ?? new Set();
+      const wake = () => {
+        clearTimeout(timer);
+        response.off('close', wake);
+        waiters.delete(wake);
+        if (!waiters.size) inboxWaiters.delete(id);
+        resolveWait();
+      };
+      const timer = setTimeout(wake, milliseconds);
+      waiters.add(wake);
+      inboxWaiters.set(id, waiters);
+      response.once('close', wake);
+    });
+  }
+
   async function commitUpload(upload, direction, localSession) {
     const { reservationId, stagedAttachments } = upload;
     try {
@@ -217,7 +243,7 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
         stagedAttachments.splice(0, stagedAttachments.length, ...attachments);
       }
       validateEnvelope(envelope, config.limits);
-      return store.putMessage({ direction, envelope, stagedAttachments, reservationId });
+      return putMessage({ direction, envelope, stagedAttachments, reservationId });
     } finally {
       activeUploads.delete(reservationId);
       store.releaseReservation(reservationId);
@@ -320,16 +346,18 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
       }
       if (route === '/local/messages' && method === 'GET') {
         const limit = positiveInt(url.searchParams.get('limit'), 20, 100, 'limit');
-        const waitValue = Number(url.searchParams.get('wait_seconds') ?? 0);
-        if (!Number.isFinite(waitValue) || waitValue < 0 || waitValue > 30) fail('INVALID_INPUT', 'wait_seconds must be 0–30');
-        const deadline = Date.now() + waitValue * 1000;
-        let result;
-        do {
-          result = store.receive(id, { limit, leaseSeconds: config.timing.leaseSeconds });
-          if (result.messages.length || Date.now() >= deadline || closed || request.destroyed) break;
-          await delay(100);
-        } while (true);
-        json(response, 200, result); return;
+        const waitSeconds = Number(url.searchParams.get('wait_seconds') ?? 0);
+        if (!Number.isFinite(waitSeconds) || waitSeconds < 0 || waitSeconds > MAX_RECEIVE_WAIT_SECONDS) fail('INVALID_INPUT', `wait_seconds must be 0–${MAX_RECEIVE_WAIT_SECONDS}`);
+        const deadline = performance.now() + waitSeconds * 1000;
+        while (!closed && !response.destroyed) {
+          const result = store.receive(id, { limit, leaseSeconds: config.timing.leaseSeconds });
+          const remaining = deadline - performance.now();
+          if (result.messages.length || remaining <= 0) { json(response, 200, result); return; }
+          const nextLease = store.nextInboxLease(id) ?? Infinity;
+          // No asynchronous work between checking the inbox and subscribing to commits.
+          await waitForInbox(id, response, Math.min(remaining, nextLease - Date.now()));
+        }
+        return;
       }
       if (route === '/local/notices' && method === 'POST') {
         const input = await readJson(request, config.limits.envelopeBytes);
@@ -405,7 +433,7 @@ export async function startDaemon({ stateDir = '.parler', workerIntervalMs = 100
           const target = store.getSession(destination.sessionId);
           if (!target || target.presence === 'closed' || target.closed) fail('SESSION_CLOSED', 'Destination session is closed', 410);
           const attachments = (envelope.attachments ?? []).map(item => store.attachment(sender.sessionId, envelope.id, item.id));
-          receipt = store.putMessage({ direction: 'inbox', envelope: stripWorkerFields(envelope), stagedAttachments: attachments });
+          receipt = putMessage({ direction: 'inbox', envelope: stripWorkerFields(envelope), stagedAttachments: attachments });
         }
       } else {
         const peer = peerMap.get(destination.nodeId);
